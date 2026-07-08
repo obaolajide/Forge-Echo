@@ -13,9 +13,9 @@ from telegram.ext import (
     filters
 )
 
-load_dotenv()  # reads variables from a local .env file, if present
+load_dotenv()  # reads variables from a local .env file
 
-TOKEN = os.environ["TOKEN"]  # set this in a .env file, never hardcode it
+TOKEN = os.environ["TOKEN"]  # set this in a .env file
 
 db = sqlite3.connect(
     "database.db",
