@@ -101,7 +101,7 @@ automatically on first run. No external database setup required.
 
 3. Run the bot:
    ```bash
-   py v4.py
+   py v6.py
    ```
    You should see:
    ```
