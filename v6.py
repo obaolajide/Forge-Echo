@@ -22,6 +22,13 @@ TOKEN = os.environ["TOKEN"]  # set this in a .env file
 _welcome_topic_env = os.environ.get("WELCOME_TOPIC_ID")
 WELCOME_TOPIC_ID = int(_welcome_topic_env) if _welcome_topic_env else None
 
+# Topic id 1 is Telegram's "General" topic — it's special-cased by the API
+# and must NOT be passed as an explicit message_thread_id, or sendMessage
+# fails with "Message thread not found". Omit the parameter entirely
+# instead when targeting it.
+WELCOME_IS_GENERAL = WELCOME_TOPIC_ID == 1
+WELCOME_SEND_THREAD_ID = None if WELCOME_IS_GENERAL else WELCOME_TOPIC_ID
+
 if WELCOME_TOPIC_ID is None:
     print("WARNING: WELCOME_TOPIC_ID not set in .env — @all mirroring is disabled.")
 
@@ -206,7 +213,12 @@ async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if mirror_members:
 
-            if message_thread_id != WELCOME_TOPIC_ID:
+            already_in_welcome = (
+                message_thread_id == WELCOME_TOPIC_ID
+                or (WELCOME_IS_GENERAL and message_thread_id is None)
+            )
+
+            if not already_in_welcome:
                 safe_original = html.escape(text)
 
                 try:
@@ -214,7 +226,7 @@ async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         chat_id=chat_id,
                         text=safe_original,
                         parse_mode="HTML",
-                        message_thread_id=WELCOME_TOPIC_ID
+                        message_thread_id=WELCOME_SEND_THREAD_ID
                     )
                 except Exception as e:
                     print(f"Failed to mirror message to Welcome: {e}")
@@ -222,7 +234,7 @@ async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_mention_batches(
                 context,
                 chat_id,
-                WELCOME_TOPIC_ID,
+                WELCOME_SEND_THREAD_ID,
                 mirror_members,
                 exclude_user_id=user.id
             )
