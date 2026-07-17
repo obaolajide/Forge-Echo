@@ -136,13 +136,17 @@ async def send_mention_batches(context, chat_id, thread_id, members, exclude_use
         mention_line = " ".join(mentions)
         msg = f"{safe_header}\n\n{mention_line}" if safe_header else mention_line
 
+        send_kwargs = {
+            "chat_id": chat_id,
+            "text": msg,
+            "parse_mode": "HTML",
+        }
+
+        if thread_id is not None:
+            send_kwargs["message_thread_id"] = thread_id
+
         try:
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text=msg,
-                parse_mode="HTML",
-                message_thread_id=thread_id
-            )
+            await context.bot.send_message(**send_kwargs)
         except Exception as e:
             print(f"Failed to send mention batch: {e}")
 
@@ -189,9 +193,8 @@ async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # =========================
     # MENTION MIRROR
     # "@all" tags everyone, "@admin" tags admins only.
-    # If typed outside Welcome, the original message is reposted there
-    # first; if typed inside Welcome, it's already visible so only the
-    # mentions are sent.
+    # The original message text is reposted into Welcome with the tags
+    # appended below it.
     # =========================
     wants_admin_tag = TRIGGER_ADMIN in clean_text
     wants_all_tag = TRIGGER_ALL in clean_text and not wants_admin_tag
@@ -215,22 +218,13 @@ async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if mirror_members:
 
-            already_in_welcome = (
-                message_thread_id == WELCOME_TOPIC_ID
-                or (WELCOME_IS_GENERAL and message_thread_id is None)
-            )
-
-            # Only prepend the original text if it's not already visible in
-            # Welcome. Otherwise just send the tags on their own.
-            header = text if not already_in_welcome else None
-
             await send_mention_batches(
                 context,
                 chat_id,
                 WELCOME_SEND_THREAD_ID,
                 mirror_members,
                 exclude_user_id=user.id,
-                header_text=header
+                header_text=text
             )
 
     return
