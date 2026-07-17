@@ -59,6 +59,8 @@ CREATE TABLE IF NOT EXISTS members (
 db.commit()
 
 print("Database connected")
+print(f"Config -> WELCOME_TOPIC_ID={WELCOME_TOPIC_ID} (general={WELCOME_IS_GENERAL}) "
+      f"TRIGGER_ALL={TRIGGER_ALL!r} TRIGGER_ADMIN={TRIGGER_ADMIN!r}")
 
 
 # =========================
@@ -218,25 +220,17 @@ async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 or (WELCOME_IS_GENERAL and message_thread_id is None)
             )
 
-            if not already_in_welcome:
-                safe_original = html.escape(text)
-
-                try:
-                    await context.bot.send_message(
-                        chat_id=chat_id,
-                        text=safe_original,
-                        parse_mode="HTML",
-                        message_thread_id=WELCOME_SEND_THREAD_ID
-                    )
-                except Exception as e:
-                    print(f"Failed to mirror message to Welcome: {e}")
+            # Only prepend the original text if it's not already visible in
+            # Welcome. Otherwise just send the tags on their own.
+            header = text if not already_in_welcome else None
 
             await send_mention_batches(
                 context,
                 chat_id,
                 WELCOME_SEND_THREAD_ID,
                 mirror_members,
-                exclude_user_id=user.id
+                exclude_user_id=user.id,
+                header_text=header
             )
 
     return
