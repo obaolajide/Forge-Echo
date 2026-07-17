@@ -153,6 +153,21 @@ async def send_mention_batches(context, chat_id, thread_id, members, exclude_use
         await asyncio.sleep(1)
 
 
+async def send_topic_message(context, chat_id, thread_id, text, parse_mode=None):
+    send_kwargs = {
+        "chat_id": chat_id,
+        "text": text,
+    }
+
+    if parse_mode:
+        send_kwargs["parse_mode"] = parse_mode
+
+    if thread_id is not None:
+        send_kwargs["message_thread_id"] = thread_id
+
+    await context.bot.send_message(**send_kwargs)
+
+
 async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not update.message or not update.message.text:
@@ -201,8 +216,28 @@ async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if WELCOME_TOPIC_ID is not None and (wants_admin_tag or wants_all_tag):
 
+        admins = await context.bot.get_chat_administrators(chat_id)
+        admin_ids = {admin.user.id for admin in admins}
+
+        if user.id not in admin_ids:
+            try:
+                await update.message.delete()
+            except Exception as e:
+                print(f"Failed to delete non-admin trigger message: {e}")
+
+            try:
+                await send_topic_message(
+                    context,
+                    chat_id,
+                    message_thread_id,
+                    "only admins can use trigger"
+                )
+            except Exception as e:
+                print(f"Failed to send non-admin trigger warning: {e}")
+
+            return
+
         if wants_admin_tag:
-            admins = await context.bot.get_chat_administrators(chat_id)
             mirror_members = [
                 (admin.user.id, admin.user.username, admin.user.first_name)
                 for admin in admins
