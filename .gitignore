@@ -1,3 +1,8 @@
 .env
+venv/
+__pycache__/
+*.pyc
 
-/venv
+database.db
+backfill_members.py
+backfill_session.session

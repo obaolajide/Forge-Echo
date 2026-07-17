@@ -1,140 +1,119 @@
 # Forge Echo
 
-A Telegram group bot that lets admins broadcast a message to everyone (or just the
-admins) it has seen active in the chat, with real notifications for users who don't
-have a `@username`.
+A Telegram bot for a single forum-style supergroup. It tracks members as they
+join, post, or leave, and lets anyone mention the whole group (or just the
+admins) from any topic, with the mention posted into a designated Welcome
+topic.
 
 ## Features
 
-### `/echo` — mention everyone
-Admins can end any message with `/echo` to broadcast it to every member the bot
-has on record for that chat.
+- Tracks group members automatically via join/leave events and message
+  activity, storing them in a local SQLite database.
+- Mention trigger (default `@alll`): typed in any topic, reposts the
+  message into the Welcome topic and tags every stored member there, except
+  the sender.
+- Admin mention trigger (default `@admin`): same behavior, but tags only
+  the group's current admins, fetched live from Telegram.
+- Works correctly in closed topics, since the bot posts as an admin.
+- Trigger phrases are configurable so they can be changed if another bot in
+  the group happens to use the same plain-text phrase.
 
-```
-Meeting moved to 6pm /echo
-```
-Sends:
-```
-Meeting moved to 6pm
+## Files
 
-@alice @bob [Charlie]
-```
-(`Charlie` has no username, so he's tagged with a real inline mention that still
-notifies him — see "Notifications that actually work" below.)
-
-If you leave no text before `/echo`, it defaults to **"Attention everyone"**.
-
-### `/echo admin` — mention admins only
-Same idea, but only pings chat admins:
-```
-Need a decision on the venue /echo admin
-```
-
-### Admin-only enforcement
-Both commands check the sender against Telegram's live admin list for the chat.
-Non-admins get:
-```
-Only admins can use this command.
-```
-
-### Automatic member tracking
-The bot builds its own roster of the chat over time — there's no manual setup.
-A user is added to the database when:
-- they send any message in the group, or
-- they join, get promoted, or are otherwise added (via Telegram's `chat_member`
-  update)
-
-A user is removed automatically when they leave or are kicked.
-
-> **Note:** Telegram's Bot API doesn't let bots list a chat's full existing
-> membership. The bot can only learn about members through the events above, so
-> coverage builds up as the group is active — it won't magically know about
-> silent members who joined before the bot did and never post. See
-> [Limitations](#limitations).
-
-### Notifications that actually work
-Users with a `@username` are tagged the normal way (`@username`). Users without
-one are tagged using a `tg://user?id=...` inline link, which still pings them —
-plain text names alone don't notify anyone, so this was specifically built to
-avoid silently skipping usernameless members.
-
-### Batched sending
-Broadcasts are sent in batches of 5 mentions per message, with a 1-second pause
-between batches, to stay under Telegram's rate limits on large groups. If the
-sender is included in the member list, they're skipped so they don't get pinged
-in their own broadcast.
-
-### Resilient to failures
-- If sending one batch fails (e.g. flood control, a user blocked the bot), the
-  bot logs it and keeps sending the remaining batches instead of crashing.
-- Network drops (e.g. your internet going out) are caught by a global error
-  handler and logged as a single line instead of a full traceback; the bot's
-  polling loop retries automatically and resumes once connectivity returns.
-- Non-group chats (DMs, channels) are ignored safely instead of raising an
-  error.
-
-### Local persistence
-Member data is stored in a local SQLite database (`database.db`), created
-automatically on first run. No external database setup required.
-
-## Requirements
-
-- Python 3.10+
-- A Telegram bot token from [@BotFather](https://t.me/BotFather)
-- **Group Privacy mode turned OFF** for your bot in BotFather (`/mybots` → your
-  bot → Bot Settings → Group Privacy → Turn off). Without this, the bot can't
-  see normal group messages, only commands directed at it.
-- The bot added to your group **as an admin**, so it can check the admin list
-  and reliably receive join/leave events.
+- `v6.py` - the bot itself.
+- `backfill_members.py` - a one-time, manually run script for pulling the
+  full current member list into the database before the bot has had a
+  chance to observe everyone. Not part of the deployed bot.
+- `requirements.txt` - dependencies for the deployed bot.
+- `.gitignore` - excludes secrets, the database, and the backfill script.
 
 ## Setup
 
 1. Install dependencies:
-   ```bash
-   pip install python-telegram-bot python-dotenv
+
+   ```
+   pip install -r requirements.txt
    ```
 
-2. Create a `.env` file in the project folder (never commit this):
-   ```
-   TOKEN=your_bot_token_here
-   ```
+2. Create a `.env` file in the project root:
 
-3. Run the bot:
-   ```bash
-   py v6.py
    ```
-   You should see:
-   ```
-   Database connected
-   Bot running...
+   TOKEN=your_bot_token
+   WELCOME_TOPIC_ID=1
+   TRIGGER_ALL=@alll
+   TRIGGER_ADMIN=@admin
    ```
 
-## `.gitignore`
+   - `TOKEN` is your bot token from BotFather.
+   - `WELCOME_TOPIC_ID` is the thread ID of the Welcome topic. Get it from
+     a message link in that topic, e.g. `https://t.me/c/<chat_id>/<topic_id>`.
+   - `TRIGGER_ALL` and `TRIGGER_ADMIN` are optional. If omitted, they
+     default to `@alll` and `@admin`.
 
-Make sure your repo excludes:
-```
-.env
-database.db
-venv/
-__pycache__/
-```
+3. Add the bot to the group as an administrator. Admin status alone is
+   enough to post in closed topics; no extra rights are required for that.
 
-## Limitations
+4. Run the bot:
 
-- **No backfill for pre-existing silent members.** The Telegram Bot API has no
-  endpoint to list a group's full membership — the bot only learns about users
-  through messages sent or `chat_member` events. Members who joined before the
-  bot and never post remain invisible until they do something the bot can see.
-- **Suffix-based trigger.** `/echo` and `/echo admin` are matched by checking if
-  the message *ends with* those strings, not as a strict command — a message
-  that incidentally ends the same way will also trigger it.
-- **Single group focus.** Data is tracked per `chat_id`, so it works across
-  multiple groups the bot is in, but there's no cross-group aggregation or
-  admin dashboard.
+   ```
+   python v6.py
+   ```
 
-## Security notes
+## One-time member backfill
 
-- Never commit your bot token. It belongs only in `.env`, which is gitignored.
-- If a token is ever exposed (committed, pasted in a log, shared in chat),
-  revoke it immediately via BotFather (`/mybots` → your bot → API Token →
-  Revoke current token) and update `.env` with the new one.
+The Bot API has no endpoint that returns a full member list, so the bot
+only learns about people as they join or post. To seed the database with
+everyone already in the group, `backfill_members.py` connects as your
+personal Telegram account (via Telethon, not the bot) and pulls the full
+participant list once.
+
+1. Get `API_ID` and `API_HASH` from https://my.telegram.org, using your
+   personal account.
+
+2. Add to the same `.env` file:
+
+   ```
+   API_ID=your_api_id
+   API_HASH=your_api_hash
+   CHANNEL_ID=your_group_channel_id
+   ```
+
+   `CHANNEL_ID` is the plain numeric group ID, without the `-100` prefix
+   that appears in bot chat IDs. For example, if the bot's stored chat_id
+   is `-1003956972838`, `CHANNEL_ID` is `3956972838`.
+
+   Alternatively, set `GROUP_USERNAME` instead of `CHANNEL_ID` to a public
+   username or invite link. `CHANNEL_ID` takes priority if both are set.
+
+3. Install Telethon:
+
+   ```
+   pip install telethon
+   ```
+
+4. Run the script from the same directory as the bot's database:
+
+   ```
+   python backfill_members.py
+   ```
+
+   On first run it will ask for your phone number, a login code, and your
+   two-step verification password if you have one set. This creates a
+   local session file so you won't be asked again.
+
+Run this script only when you need a fresh sync, not on a schedule. It
+uses a personal account, and Telegram does watch for bulk-scraping
+patterns.
+
+## Deployment notes
+
+- This bot uses polling, not webhooks, so it should be deployed as a
+  background worker rather than a web service.
+- SQLite storage is a plain file on disk. On platforms with an ephemeral
+  filesystem (Railway, Render, Fly.io, and similar), attach persistent
+  storage and make sure the working directory points at it, or the member
+  database will be wiped on every redeploy.
+- Only `TOKEN` and `WELCOME_TOPIC_ID` (and optionally `TRIGGER_ALL` /
+  `TRIGGER_ADMIN`) need to be set in the deployed environment. `API_ID`,
+  `API_HASH`, and `CHANNEL_ID` are only needed to run the backfill script
+  locally and should not be part of the deployed bot's configuration.

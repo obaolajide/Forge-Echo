@@ -17,6 +17,21 @@ load_dotenv()  # reads variables from a local .env file
 
 TOKEN = os.environ["TOKEN"]  # set this in a .env file
 
+# Thread ID of the "Welcome" topic — where @all mentions get mirrored to.
+# Get this from a message link in that topic: https://t.me/c/<chat>/<TOPIC_ID>
+_welcome_topic_env = os.environ.get("WELCOME_TOPIC_ID")
+WELCOME_TOPIC_ID = int(_welcome_topic_env) if _welcome_topic_env else None
+
+if WELCOME_TOPIC_ID is None:
+    print("WARNING: WELCOME_TOPIC_ID not set in .env — @all mirroring is disabled.")
+
+# Trigger phrases for the mention mirror. Kept configurable because plain
+# "@all"/"@admin" are common conventions — if another bot in the group also
+# listens for those, both will fire on the same message. Change these to
+# something more unique to this bot if that happens.
+TRIGGER_ALL = os.environ.get("TRIGGER_ALL", "@alll")
+TRIGGER_ADMIN = os.environ.get("TRIGGER_ADMIN", "@admin")
+
 db = sqlite3.connect(
     "database.db",
     check_same_thread=False
@@ -81,6 +96,50 @@ async def track_members(update: Update, context: ContextTypes.DEFAULT_TYPE):
         db.commit()
 
 
+async def send_mention_batches(context, chat_id, thread_id, members, exclude_user_id, header_text=None):
+    """Sends @-mentions for `members` in batches of 5 into the given topic,
+    skipping `exclude_user_id`. `header_text`, if given, is repeated at the
+    top of every batch (matches the old inline /echo behavior)."""
+
+    batch_size = 5
+    safe_header = html.escape(header_text) if header_text else None
+
+    for i in range(0, len(members), batch_size):
+
+        batch = members[i:i + batch_size]
+
+        mentions = []
+
+        for user_id, username, first_name in batch:
+
+            if user_id == exclude_user_id:
+                continue
+
+            if username:
+                mentions.append(f"@{username}")
+            else:
+                safe_name = html.escape(first_name or "user")
+                mentions.append(f'<a href="tg://user?id={user_id}">{safe_name}</a>')
+
+        if not mentions:
+            continue
+
+        mention_line = " ".join(mentions)
+        msg = f"{safe_header}\n\n{mention_line}" if safe_header else mention_line
+
+        try:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=msg,
+                parse_mode="HTML",
+                message_thread_id=thread_id
+            )
+        except Exception as e:
+            print(f"Failed to send mention batch: {e}")
+
+        await asyncio.sleep(1)
+
+
 async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not update.message or not update.message.text:
@@ -94,6 +153,7 @@ async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     chat_id = update.effective_chat.id
     user = update.effective_user
+    message_thread_id = update.message.message_thread_id  # None if not in a topic
 
     text = update.message.text
     clean_text = text.strip().lower()
@@ -118,95 +178,56 @@ async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db.commit()
 
     # =========================
-    # SUFFIX TRIGGER LOGIC
+    # MENTION MIRROR
+    # "@all" tags everyone, "@admin" tags admins only.
+    # If typed outside Welcome, the original message is reposted there
+    # first; if typed inside Welcome, it's already visible so only the
+    # mentions are sent.
     # =========================
+    wants_admin_tag = TRIGGER_ADMIN in clean_text
+    wants_all_tag = TRIGGER_ALL in clean_text and not wants_admin_tag
 
-    trigger_all = "/echo"
-    trigger_admin = "/echo admin"
+    if WELCOME_TOPIC_ID is not None and (wants_admin_tag or wants_all_tag):
 
-    is_admin_echo = clean_text.endswith(trigger_admin)
-    is_echo = clean_text.endswith(trigger_all) and not is_admin_echo
+        if wants_admin_tag:
+            admins = await context.bot.get_chat_administrators(chat_id)
+            mirror_members = [
+                (admin.user.id, admin.user.username, admin.user.first_name)
+                for admin in admins
+            ]
+        else:
+            cursor.execute("""
+            SELECT user_id, username, first_name
+            FROM members
+            WHERE chat_id = ?
+            """, (chat_id,))
 
-    if not (is_echo or is_admin_echo):
-        return
+            mirror_members = cursor.fetchall()
 
-    # ADMIN CHECK
-    admins = await context.bot.get_chat_administrators(chat_id)
-    admin_ids = [admin.user.id for admin in admins]
+        if mirror_members:
 
-    if user.id not in admin_ids:
-        await update.message.reply_text("Only admins can use this command.")
-        return
+            if message_thread_id != WELCOME_TOPIC_ID:
+                safe_original = html.escape(text)
 
-    # MESSAGE EXTRACTION
-    if is_admin_echo:
-        custom_message = text[:-len(trigger_admin)].strip()
-    else:
-        custom_message = text[:-len(trigger_all)].strip()
+                try:
+                    await context.bot.send_message(
+                        chat_id=chat_id,
+                        text=safe_original,
+                        parse_mode="HTML",
+                        message_thread_id=WELCOME_TOPIC_ID
+                    )
+                except Exception as e:
+                    print(f"Failed to mirror message to Welcome: {e}")
 
-    if custom_message == "":
-        custom_message = "Attention everyone"
-
-    # GET MEMBERS
-    cursor.execute("""
-    SELECT user_id, username, first_name
-    FROM members
-    WHERE chat_id = ?
-    """, (chat_id,))
-
-    members = cursor.fetchall()
-
-    # ADMIN MODE FILTER
-    if is_admin_echo:
-        admin_set = set(admin_ids)
-        members = [m for m in members if m[0] in admin_set]
-
-    if not members:
-        await update.message.reply_text("No stored members yet.")
-        return
-
-    # BATCH SEND
-    batch_size = 5
-
-    for i in range(0, len(members), batch_size):
-
-        batch = members[i:i + batch_size]
-
-        mentions = []
-
-        for user_id, username, first_name in batch:
-
-            if user_id == user.id:
-                continue
-
-            if username:
-                mentions.append(f"@{username}")
-            else:
-                # FIX: a bare first name is just text, it doesn't notify
-                # the user. Use a tg://user inline-mention entity instead,
-                # which pings them the same way an @username does.
-                safe_name = html.escape(first_name or "user")
-                mentions.append(f'<a href="tg://user?id={user_id}">{safe_name}</a>')
-
-        if not mentions:
-            continue
-
-        safe_custom_message = html.escape(custom_message)
-        msg = f"{safe_custom_message}\n\n" + " ".join(mentions)
-
-        # FIX: wrap the send in try/except so one failed batch (e.g. flood
-        # control, a user who blocked the bot) doesn't abort the remaining
-        # batches.
-        try:
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text=msg,
-                parse_mode="HTML"
+            await send_mention_batches(
+                context,
+                chat_id,
+                WELCOME_TOPIC_ID,
+                mirror_members,
+                exclude_user_id=user.id
             )
-        except Exception as e:
-            print(f"Failed to send batch {i // batch_size}: {e}")
 
-        await asyncio.sleep(1)
+    return
 
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
